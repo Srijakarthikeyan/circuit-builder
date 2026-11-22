@@ -3,7 +3,7 @@ import { PARTS } from '../parts'
 import { checkComponentWiring } from '../simulation'
 
 /**
- * Simple, zero-dependency inline SVG line chart for rendering real-time sensor streams
+ * Zero-dependency inline SVG line chart for rendering real-time sensor streams
  */
 function InlineSvgChart({ data = [], min = 0, max = 100, color = '#38bdf8', unit = '' }) {
   const width = 280
@@ -56,6 +56,9 @@ function InlineSvgChart({ data = [], min = 0, max = 100, color = '#38bdf8', unit
 }
 
 export function DashboardTab({
+  isSourceRunning = false,
+  deviceStatus = 'Disconnected',
+  latestDeviceData = null,
   sensorValues = {},
   sensorHistory = {},
   outputStates = {},
@@ -79,7 +82,36 @@ export function DashboardTab({
     setThresholds((prev) => ({ ...prev, [key]: Number(val) }))
   }
 
-  // BUG 2 FIX: Identify sensors that are on the canvas AND correctly wired
+  // Active incoming sensors and actuators from Device Link telemetry
+  const incomingSensors = latestDeviceData?.sensors || {}
+  const incomingActuators = latestDeviceData?.actuators || {}
+
+  // Resolve current sensor values from active data source, falling back to simulated values
+  const currentWaterLevel = incomingSensors.water_level_pct !== undefined
+    ? incomingSensors.water_level_pct
+    : (sensorValues.waterlevel ?? 0)
+
+  const currentDistance = incomingSensors.distance_cm !== undefined
+    ? incomingSensors.distance_cm
+    : (sensorValues.hcsr04 ?? 100)
+
+  const currentTemp = incomingSensors.temperature_c !== undefined
+    ? incomingSensors.temperature_c
+    : (sensorValues.dht22_temp ?? 25)
+
+  const currentHum = incomingSensors.humidity_pct !== undefined
+    ? incomingSensors.humidity_pct
+    : (sensorValues.dht22_hum ?? 50)
+
+  const currentPot = (incomingSensors.pot_pct ?? incomingSensors.potentiometer_pct) !== undefined
+    ? (incomingSensors.pot_pct ?? incomingSensors.potentiometer_pct)
+    : (sensorValues.potentiometer ?? 0)
+
+  const currentButton = incomingSensors.button !== undefined
+    ? incomingSensors.button === 1
+    : (sensorValues.button === 1)
+
+  // Identify sensors wired on canvas OR present in incoming data stream
   const hasWiredWaterLevel = nodes.some((n) => {
     const pKey = n.data?.partId || (PARTS[n.type] ? n.type : null) || n.id.split('-')[0]
     return pKey === 'waterlevel' && checkComponentWiring(n, nodes, edges).isWired
@@ -105,68 +137,73 @@ export function DashboardTab({
     return pKey === 'button' && checkComponentWiring(n, nodes, edges).isWired
   })
 
-  const wiredSensorsCount = (hasWiredWaterLevel ? 1 : 0) +
-                            (hasWiredHcsr04 ? 1 : 0) +
-                            (hasWiredDht22 ? 1 : 0) +
-                            (hasWiredPotentiometer ? 1 : 0)
+  // Show card if wired in circuit OR present in incoming telemetry data
+  const hasWaterLevel = hasWiredWaterLevel || incomingSensors.water_level_pct !== undefined
+  const hasHcsr04 = hasWiredHcsr04 || incomingSensors.distance_cm !== undefined
+  const hasDht22 = hasWiredDht22 || incomingSensors.temperature_c !== undefined || incomingSensors.humidity_pct !== undefined
+  const hasPotentiometer = hasWiredPotentiometer || incomingSensors.pot_pct !== undefined || incomingSensors.potentiometer_pct !== undefined
 
-  // Identify actuators really on canvas
+  const activeSensorsCount = (hasWaterLevel ? 1 : 0) +
+                             (hasHcsr04 ? 1 : 0) +
+                             (hasDht22 ? 1 : 0) +
+                             (hasPotentiometer ? 1 : 0)
+
+  // Identify actuators on canvas or present in incoming data
   const placedActuators = nodes
     .map((node) => {
       const partKey = node.data?.partId || (PARTS[node.type] ? node.type : null) || node.id.split('-')[0]
       const part = PARTS[partKey]
       if (!part || (part.id !== 'led' && part.id !== 'buzzer')) return null
       const status = checkComponentWiring(node, nodes, edges)
-      return { node, part, status }
+      const isActive = incomingActuators[node.id] !== undefined
+        ? (incomingActuators[node.id] === 'ON' || incomingActuators[node.id] === true)
+        : Boolean(outputStates[node.id])
+      return { node, part, status, isActive }
     })
     .filter(Boolean)
 
-  // Active alerts calculation (ONLY for wired sensors)
+  // Active alerts calculation
   const alerts = []
-  if (hasWiredWaterLevel && (sensorValues.waterlevel || 0) > thresholds.waterlevel) {
-    alerts.push(`Water Level exceeds alert threshold (${sensorValues.waterlevel}% > ${thresholds.waterlevel}%)`)
+  if (hasWaterLevel && currentWaterLevel > thresholds.waterlevel) {
+    alerts.push(`Water Level exceeds alert threshold (${currentWaterLevel}% > ${thresholds.waterlevel}%)`)
   }
-  if (hasWiredHcsr04 && (sensorValues.hcsr04 || 100) < thresholds.hcsr04) {
-    alerts.push(`Proximity Alert: Distance is critical (${sensorValues.hcsr04} cm < ${thresholds.hcsr04} cm)`)
+  if (hasHcsr04 && currentDistance < thresholds.hcsr04) {
+    alerts.push(`Proximity Alert: Distance is critical (${currentDistance} cm < ${thresholds.hcsr04} cm)`)
   }
-  if (hasWiredDht22) {
-    if ((sensorValues.dht22_temp || 25) > thresholds.dht22_temp) {
-      alerts.push(`High Temperature Alert: ${sensorValues.dht22_temp} °C > ${thresholds.dht22_temp} °C`)
+  if (hasDht22) {
+    if (currentTemp > thresholds.dht22_temp) {
+      alerts.push(`High Temperature Alert: ${currentTemp} °C > ${thresholds.dht22_temp} °C`)
     }
-    if ((sensorValues.dht22_hum || 50) > thresholds.dht22_hum) {
-      alerts.push(`High Humidity Alert: ${sensorValues.dht22_hum} % > ${thresholds.dht22_hum} %`)
+    if (currentHum > thresholds.dht22_hum) {
+      alerts.push(`High Humidity Alert: ${currentHum} % > ${thresholds.dht22_hum} %`)
     }
   }
-  if (hasWiredPotentiometer && (sensorValues.potentiometer || 0) > thresholds.potentiometer) {
-    alerts.push(`Potentiometer Alert: ${sensorValues.potentiometer}% > ${thresholds.potentiometer}%`)
+  if (hasPotentiometer && currentPot > thresholds.potentiometer) {
+    alerts.push(`Potentiometer Alert: ${currentPot}% > ${thresholds.potentiometer}%`)
   }
 
-  // JSON Feed representation: ONLY sensors and actuators really on canvas and wired
+  // JSON Feed representation
   const activeSensorsJson = {}
-  if (hasWiredWaterLevel) {
-    activeSensorsJson.water_level_pct = sensorValues.waterlevel ?? 0
+  if (hasWaterLevel) activeSensorsJson.water_level_pct = currentWaterLevel
+  if (hasHcsr04) activeSensorsJson.distance_cm = currentDistance
+  if (hasDht22) {
+    activeSensorsJson.temperature_c = currentTemp
+    activeSensorsJson.humidity_pct = currentHum
   }
-  if (hasWiredHcsr04) {
-    activeSensorsJson.distance_cm = sensorValues.hcsr04 ?? 100
-  }
-  if (hasWiredDht22) {
-    activeSensorsJson.temperature_c = sensorValues.dht22_temp ?? 25
-    activeSensorsJson.humidity_pct = sensorValues.dht22_hum ?? 50
-  }
-  if (hasWiredPotentiometer) {
-    activeSensorsJson.potentiometer_pct = sensorValues.potentiometer ?? 0
-  }
-  if (hasWiredButton) {
-    activeSensorsJson.button_pressed = sensorValues.button === 1
+  if (hasPotentiometer) activeSensorsJson.pot_pct = currentPot
+  if (hasWiredButton || incomingSensors.button !== undefined) {
+    activeSensorsJson.button = currentButton ? 1 : 0
   }
 
   const activeActuatorsJson = {}
-  placedActuators.forEach(({ node }) => {
-    activeActuatorsJson[node.id] = outputStates[node.id] ? 'ON' : 'OFF'
+  placedActuators.forEach(({ node, isActive }) => {
+    activeActuatorsJson[node.id] = isActive ? 'ON' : 'OFF'
   })
 
   const jsonFeed = {
+    t: latestDeviceData?.t ?? Math.floor(Date.now() % 1000000),
     device_id: 'esp32_station_01',
+    source: deviceStatus,
     timestamp: new Date().toISOString(),
     sensors: activeSensorsJson,
     actuators: activeActuatorsJson,
@@ -209,7 +246,7 @@ export function DashboardTab({
             <span>📊 IoT Cloud Telemetry Dashboard</span>
           </h2>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 3 }}>
-            Live web dashboard showing data strictly for components wired on your canvas.
+            Live data fed from active source: <span style={{ color: isSourceRunning ? '#38bdf8' : '#94a3b8', fontWeight: 600 }}>{deviceStatus}</span>
           </div>
         </div>
 
@@ -234,7 +271,7 @@ export function DashboardTab({
       </div>
 
       {/* Alert Banner if any thresholds crossed */}
-      {alerts.length > 0 && (
+      {alerts.length > 0 && isSourceRunning && (
         <div
           style={{
             background: 'rgba(239, 68, 68, 0.15)',
@@ -257,8 +294,29 @@ export function DashboardTab({
         </div>
       )}
 
-      {/* Sensor Metric Cards: ONLY FOR WIRED SENSORS */}
-      {wiredSensorsCount === 0 ? (
+      {/* CONDITIONAL RENDER: SOURCE NOT RUNNING */}
+      {!isSourceRunning ? (
+        <div
+          style={{
+            background: '#1e293b',
+            border: '1px dashed #334155',
+            borderRadius: 12,
+            padding: '48px 24px',
+            textAlign: 'center',
+            color: '#94a3b8',
+            fontSize: 14,
+          }}
+        >
+          <div style={{ fontSize: 36, marginBottom: 12 }}>🔌</div>
+          <div style={{ fontWeight: 600, color: '#f8fafc', fontSize: 16, marginBottom: 8 }}>
+            Start a data source in the Device Link tab to see live data.
+          </div>
+          <div style={{ fontSize: 13, color: '#94a3b8', maxWidth: 460, margin: '0 auto' }}>
+            Open the <strong>Device Link</strong> tab to start the built-in Simulated ESP32 or connect a physical ESP32 board over USB (Web Serial).
+          </div>
+        </div>
+      ) : activeSensorsCount === 0 ? (
+        /* CONDITIONAL RENDER: SOURCE RUNNING BUT NO SENSORS WIRED */
         <div
           style={{
             background: '#1e293b',
@@ -276,15 +334,16 @@ export function DashboardTab({
           </div>
         </div>
       ) : (
+        /* SENSOR METRIC CARDS */
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
           {/* Water Level */}
-          {hasWiredWaterLevel && (
+          {hasWaterLevel && (
             <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#06b6d4', textTransform: 'uppercase' }}>Water Depth</span>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#f8fafc' }}>
-                    {sensorValues.waterlevel ?? 0} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
+                    {currentWaterLevel} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, textAlign: 'right' }}>
@@ -302,13 +361,13 @@ export function DashboardTab({
           )}
 
           {/* HC-SR04 Distance */}
-          {hasWiredHcsr04 && (
+          {hasHcsr04 && (
             <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#818cf8', textTransform: 'uppercase' }}>Proximity Distance</span>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#f8fafc' }}>
-                    {sensorValues.hcsr04 ?? 100} <span style={{ fontSize: 14, color: '#94a3b8' }}>cm</span>
+                    {currentDistance} <span style={{ fontSize: 14, color: '#94a3b8' }}>cm</span>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, textAlign: 'right' }}>
@@ -326,13 +385,13 @@ export function DashboardTab({
           )}
 
           {/* DHT22 Temperature */}
-          {hasWiredDht22 && (
+          {hasDht22 && (
             <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#f87171', textTransform: 'uppercase' }}>Ambient Temp</span>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#f8fafc' }}>
-                    {sensorValues.dht22_temp ?? 25} <span style={{ fontSize: 14, color: '#94a3b8' }}>°C</span>
+                    {currentTemp} <span style={{ fontSize: 14, color: '#94a3b8' }}>°C</span>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, textAlign: 'right' }}>
@@ -350,13 +409,13 @@ export function DashboardTab({
           )}
 
           {/* DHT22 Humidity */}
-          {hasWiredDht22 && (
+          {hasDht22 && (
             <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#38bdf8', textTransform: 'uppercase' }}>Relative Humidity</span>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#f8fafc' }}>
-                    {sensorValues.dht22_hum ?? 50} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
+                    {currentHum} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, textAlign: 'right' }}>
@@ -374,13 +433,13 @@ export function DashboardTab({
           )}
 
           {/* Potentiometer */}
-          {hasWiredPotentiometer && (
+          {hasPotentiometer && (
             <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
                 <div>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#9333ea', textTransform: 'uppercase' }}>Potentiometer Dial</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', textTransform: 'uppercase' }}>Analog Knob</span>
                   <div style={{ fontSize: 26, fontWeight: 700, color: '#f8fafc' }}>
-                    {sensorValues.potentiometer ?? 0} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
+                    {currentPot} <span style={{ fontSize: 14, color: '#94a3b8' }}>%</span>
                   </div>
                 </div>
                 <div style={{ fontSize: 11, textAlign: 'right' }}>
@@ -393,120 +452,97 @@ export function DashboardTab({
                   />
                 </div>
               </div>
-              <InlineSvgChart data={sensorHistory.potentiometer || []} min={0} max={100} color="#9333ea" unit="%" />
+              <InlineSvgChart data={sensorHistory.potentiometer || []} min={0} max={100} color="#fbbf24" unit="%" />
             </div>
           )}
         </div>
       )}
 
-      {/* Actuators Output Status Section */}
-      <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
-        <div style={{ fontSize: 12, fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase', marginBottom: 12 }}>
-          Connected Actuators Status
-        </div>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+      {/* Actuators Status & JSON Feed Section */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.2fr)', gap: 16 }}>
+        {/* Connected Actuators Status */}
+        <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>
+            Connected Actuators Status
+          </div>
           {placedActuators.length === 0 ? (
-            <div style={{ color: '#64748b', fontSize: 12, fontStyle: 'italic' }}>
-              No actuators (LED / Buzzer) are on the canvas yet.
+            <div style={{ color: '#64748b', fontSize: 12, fontStyle: 'italic', padding: '10px 0' }}>
+              No actuators (LEDs or buzzers) placed on canvas.
             </div>
           ) : (
-            placedActuators.map(({ node, part, status }) => {
-              const isLED = part.id === 'led'
-              const isOn = Boolean(outputStates[node.id])
-              return (
-                <div
-                  key={node.id}
+            placedActuators.map(({ node, part, isActive }) => (
+              <div
+                key={node.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  background: '#0f172a',
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  border: '1px solid #334155',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: part.color || '#38bdf8' }} />
+                  <span style={{ fontSize: 12.5, fontWeight: 500 }}>{node.id} ({part.name})</span>
+                </div>
+                <span
                   style={{
-                    background: '#0f172a',
-                    border: '1px solid #334155',
-                    borderRadius: 8,
-                    padding: '10px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    background: isActive ? 'rgba(34, 197, 94, 0.2)' : 'rgba(100, 116, 139, 0.2)',
+                    color: isActive ? '#4ade80' : '#94a3b8',
                   }}
                 >
-                  <span style={{ fontSize: 18 }}>{isLED ? '💡' : '🔊'}</span>
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#f8fafc' }}>
-                      {part.name} ({node.id})
-                    </div>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        fontSize: 10,
-                        fontWeight: 700,
-                        padding: '2px 6px',
-                        borderRadius: 4,
-                        background: isOn && status.isWired
-                          ? (isLED ? 'rgba(239, 68, 68, 0.2)' : 'rgba(249, 115, 22, 0.2)')
-                          : '#1e293b',
-                        color: isOn && status.isWired
-                          ? (isLED ? '#f87171' : '#fb923c')
-                          : '#64748b',
-                      }}
-                    >
-                      {!status.isWired
-                        ? 'NOT WIRED'
-                        : isOn
-                        ? 'STATE: ACTIVE (ON)'
-                        : 'STATE: IDLE (OFF)'}
-                    </span>
-                  </div>
-                </div>
-              )
-            })
+                  {isActive ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            ))
           )}
         </div>
-      </div>
 
-      {/* Data feed (JSON) Section */}
-      <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 'bold', color: '#94a3b8', textTransform: 'uppercase' }}>
-              Data Feed (JSON Stream)
+        {/* Data Feed (JSON) */}
+        <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 10, padding: '16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>
+              Data Feed (JSON)
             </div>
-            <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-              Real firmware would serialize sensor readings and publish this payload over Wi-Fi via MQTT or HTTP POST to your cloud backend.
-            </div>
+            <button
+              type="button"
+              onClick={handleCopyJson}
+              style={{
+                fontSize: 11,
+                padding: '3px 8px',
+                borderRadius: 4,
+                background: copied ? '#059669' : '#334155',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+              }}
+            >
+              {copied ? '✓ Copied' : 'Copy JSON'}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={handleCopyJson}
+          <pre
             style={{
-              padding: '6px 12px',
-              fontSize: 12,
-              fontWeight: 600,
-              background: copied ? '#16a34a' : '#0284c7',
-              color: '#ffffff',
-              border: 'none',
+              background: '#0f172a',
+              padding: '12px',
               borderRadius: 6,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
+              border: '1px solid #334155',
+              fontSize: 11,
+              fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+              color: '#38bdf8',
+              overflowX: 'auto',
+              maxHeight: 180,
+              margin: 0,
             }}
           >
-            <span>{copied ? '✓ Copied!' : '📋 Copy JSON'}</span>
-          </button>
+            {JSON.stringify(jsonFeed, null, 2)}
+          </pre>
         </div>
-
-        <pre
-          style={{
-            margin: 0,
-            background: '#0f172a',
-            border: '1px solid #334155',
-            borderRadius: 8,
-            padding: '12px 16px',
-            fontSize: 12,
-            fontFamily: 'monospace',
-            color: '#38bdf8',
-            overflowX: 'auto',
-          }}
-        >
-          {JSON.stringify(jsonFeed, null, 2)}
-        </pre>
       </div>
     </div>
   )

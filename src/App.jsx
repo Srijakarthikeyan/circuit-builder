@@ -21,8 +21,10 @@ import Header from './components/Header'
 import ConnectionChecksPanel from './components/ConnectionChecksPanel'
 import HardwareHelperTab from './components/HardwareHelperTab'
 import SimulateTab from './components/SimulateTab'
+import DeviceLinkTab from './components/DeviceLinkTab'
 import DashboardTab from './components/DashboardTab'
 import BuildGuideTab from './components/BuildGuideTab'
+import { SimulatedDevice, WebSerialDevice, parseDeviceLine } from './deviceLink'
 
 const boxStyle = {
   background: '#1e293b',
@@ -179,6 +181,28 @@ function CircuitBuilder() {
   const [isFeedPaused, setIsFeedPaused] = useState(false)
   const [eventLogs, setEventLogs] = useState([])
 
+  // Device Link pipeline state
+  const [activeSourceType, setActiveSourceType] = useState('simulated')
+  const [deviceStatus, setDeviceStatus] = useState('Simulated ESP32 running')
+  const [isSourceRunning, setIsSourceRunning] = useState(true)
+  const [serialLogs, setSerialLogs] = useState([])
+  const [latestDeviceData, setLatestDeviceData] = useState(null)
+  const isWebSerialSupported = typeof navigator !== 'undefined' && 'serial' in navigator
+
+  const simulatedDeviceRef = useRef(null)
+  const serialDeviceRef = useRef(null)
+
+  const sensorValuesRef = useRef(sensorValues)
+  sensorValuesRef.current = sensorValues
+  const logicRulesRef = useRef(logicRules)
+  logicRulesRef.current = logicRules
+  const nodesRef = useRef(nodes)
+  nodesRef.current = nodes
+  const edgesRef = useRef(edges)
+  edgesRef.current = edges
+  const isFeedPausedRef = useRef(isFeedPaused)
+  isFeedPausedRef.current = isFeedPaused
+
   const partCounts = useRef({
     esp32: 1,
     led: 0,
@@ -323,25 +347,134 @@ function CircuitBuilder() {
     return evaluateLogicRules(logicRules, sensorValues, componentStatuses)
   }, [logicRules, sensorValues, componentStatuses])
 
-  // Simulation tick loop (500 ms): Updates sensorHistory for Dashboard without overwriting user sliders
-  useEffect(() => {
-    if (!isSimulating || isFeedPaused) return
+  // Handle incoming line from active data source (Simulated or Real Web Serial)
+  const handleIncomingLine = useCallback((line) => {
+    setSerialLogs((prev) => [...prev.slice(-199), line])
+    const parsed = parseDeviceLine(line)
+    if (parsed) {
+      setLatestDeviceData(parsed)
 
-    const interval = setInterval(() => {
-      setSensorHistory((prev) => {
-        const maxSamples = 60
-        return {
-          waterlevel: [...(prev.waterlevel || []).slice(-maxSamples + 1), sensorValues.waterlevel ?? 0],
-          hcsr04: [...(prev.hcsr04 || []).slice(-maxSamples + 1), sensorValues.hcsr04 ?? 100],
-          dht22_temp: [...(prev.dht22_temp || []).slice(-maxSamples + 1), sensorValues.dht22_temp ?? 25],
-          dht22_hum: [...(prev.dht22_hum || []).slice(-maxSamples + 1), sensorValues.dht22_hum ?? 50],
-          potentiometer: [...(prev.potentiometer || []).slice(-maxSamples + 1), sensorValues.potentiometer ?? 0],
-        }
+      if (!isFeedPausedRef.current) {
+        setSensorHistory((prev) => {
+          const maxSamples = 60
+          const s = parsed.sensors || {}
+          return {
+            waterlevel: [
+              ...(prev.waterlevel || []).slice(-maxSamples + 1),
+              s.water_level_pct ?? prev.waterlevel?.[prev.waterlevel.length - 1] ?? 0,
+            ],
+            hcsr04: [
+              ...(prev.hcsr04 || []).slice(-maxSamples + 1),
+              s.distance_cm ?? prev.hcsr04?.[prev.hcsr04.length - 1] ?? 100,
+            ],
+            dht22_temp: [
+              ...(prev.dht22_temp || []).slice(-maxSamples + 1),
+              s.temperature_c ?? prev.dht22_temp?.[prev.dht22_temp.length - 1] ?? 25,
+            ],
+            dht22_hum: [
+              ...(prev.dht22_hum || []).slice(-maxSamples + 1),
+              s.humidity_pct ?? prev.dht22_hum?.[prev.dht22_hum.length - 1] ?? 50,
+            ],
+            potentiometer: [
+              ...(prev.potentiometer || []).slice(-maxSamples + 1),
+              (s.pot_pct ?? s.potentiometer_pct) ?? prev.potentiometer?.[prev.potentiometer.length - 1] ?? 0,
+            ],
+          }
+        })
+      }
+    }
+  }, [])
+
+  const startSimulatedSource = useCallback(() => {
+    if (serialDeviceRef.current) {
+      serialDeviceRef.current.stop()
+    }
+    if (!simulatedDeviceRef.current) {
+      simulatedDeviceRef.current = new SimulatedDevice({
+        getSensorValues: () => sensorValuesRef.current,
+        getLogicRules: () => logicRulesRef.current,
+        getNodes: () => nodesRef.current,
+        getEdges: () => edgesRef.current,
       })
-    }, 500)
+      simulatedDeviceRef.current.onLine(handleIncomingLine)
+      simulatedDeviceRef.current.onStatus(setDeviceStatus)
+    }
+    simulatedDeviceRef.current.start()
+    setIsSourceRunning(true)
+    setIsSimulating(true)
+  }, [handleIncomingLine])
 
-    return () => clearInterval(interval)
-  }, [isSimulating, isFeedPaused, sensorValues])
+  const stopSimulatedSource = useCallback(() => {
+    if (simulatedDeviceRef.current) {
+      simulatedDeviceRef.current.stop()
+    }
+    setIsSourceRunning(false)
+    setIsSimulating(false)
+  }, [])
+
+  const startSerialSource = useCallback(async () => {
+    if (simulatedDeviceRef.current) {
+      simulatedDeviceRef.current.stop()
+    }
+    if (!serialDeviceRef.current) {
+      serialDeviceRef.current = new WebSerialDevice()
+      serialDeviceRef.current.onLine(handleIncomingLine)
+      serialDeviceRef.current.onStatus(setDeviceStatus)
+    }
+    setIsSourceRunning(true)
+    await serialDeviceRef.current.start()
+  }, [handleIncomingLine])
+
+  const stopSerialSource = useCallback(async () => {
+    if (serialDeviceRef.current) {
+      await serialDeviceRef.current.stop()
+    }
+    setIsSourceRunning(false)
+  }, [])
+
+  const handleStartSource = useCallback(() => {
+    if (activeSourceType === 'simulated') {
+      startSimulatedSource()
+    } else {
+      startSerialSource()
+    }
+  }, [activeSourceType, startSimulatedSource, startSerialSource])
+
+  const handleStopSource = useCallback(() => {
+    if (activeSourceType === 'simulated') {
+      stopSimulatedSource()
+    } else {
+      stopSerialSource()
+    }
+  }, [activeSourceType, stopSimulatedSource, stopSerialSource])
+
+  const handleChangeSourceType = useCallback((type) => {
+    if (type === activeSourceType) return
+    if (isSourceRunning) {
+      if (activeSourceType === 'simulated') stopSimulatedSource()
+      else stopSerialSource()
+    }
+    setActiveSourceType(type)
+    setDeviceStatus('Disconnected')
+  }, [activeSourceType, isSourceRunning, stopSimulatedSource, stopSerialSource])
+
+  const handleToggleSimulation = useCallback(() => {
+    if (activeSourceType === 'simulated') {
+      if (isSourceRunning) stopSimulatedSource()
+      else startSimulatedSource()
+    } else {
+      setIsSimulating((prev) => !prev)
+    }
+  }, [activeSourceType, isSourceRunning, startSimulatedSource, stopSimulatedSource])
+
+  // Mount effect to start simulated device initially
+  useEffect(() => {
+    startSimulatedSource()
+    return () => {
+      if (simulatedDeviceRef.current) simulatedDeviceRef.current.stop()
+      if (serialDeviceRef.current) serialDeviceRef.current.stop()
+    }
+  }, [startSimulatedSource])
 
   // Track output changes for event log
   const prevOutputStatesRef = useRef({})
@@ -865,14 +998,32 @@ function CircuitBuilder() {
             onDeleteRule={(id) => setLogicRules((prev) => prev.filter((r) => r.id !== id))}
             outputStates={outputStates}
             isSimulating={isSimulating}
-            onToggleSimulation={() => setIsSimulating((prev) => !prev)}
+            onToggleSimulation={handleToggleSimulation}
             eventLogs={eventLogs}
           />
         )}
 
-        {/* TAB 4: DASHBOARD */}
+        {/* TAB 4: DEVICE LINK */}
+        {activeTab === 'devicelink' && (
+          <DeviceLinkTab
+            activeSourceType={activeSourceType}
+            onChangeSourceType={handleChangeSourceType}
+            deviceStatus={deviceStatus}
+            isSourceRunning={isSourceRunning}
+            onStartSource={handleStartSource}
+            onStopSource={handleStopSource}
+            serialLogs={serialLogs}
+            onClearLogs={() => setSerialLogs([])}
+            isWebSerialSupported={isWebSerialSupported}
+          />
+        )}
+
+        {/* TAB 5: DASHBOARD */}
         {activeTab === 'dashboard' && (
           <DashboardTab
+            isSourceRunning={isSourceRunning}
+            deviceStatus={deviceStatus}
+            latestDeviceData={latestDeviceData}
             sensorValues={sensorValues}
             sensorHistory={sensorHistory}
             outputStates={outputStates}
@@ -883,7 +1034,7 @@ function CircuitBuilder() {
           />
         )}
 
-        {/* TAB 5: BUILD GUIDE */}
+        {/* TAB 6: BUILD GUIDE */}
         {activeTab === 'guide' && (
           <BuildGuideTab
             nodes={nodes}

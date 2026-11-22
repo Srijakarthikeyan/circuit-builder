@@ -17,6 +17,7 @@ Circuit Builder supports the whole early development workflow in one place: choo
 - **Smart Connection Checks:** rule-based checks flag short circuits, clashing pins, missing power or ground, LEDs without resistors, analog sensors on the wrong ADC pins, and 5V signals going into 3.3V pins. Each issue explains how to fix it, and problem wires turn red or orange.
 - **Hardware Helper:** describe a project goal (for example "water level monitor") and get a recommended parts list with reasons, then add the parts and auto-wire a correct example circuit.
 - **Simulation:** control virtual sensors with sliders, build IF-THEN logic rules, and watch LEDs and buzzers react live.
+- **Device Link:** unified hardware-software data pipeline supporting built-in simulated ESP32 telemetry or real ESP32 boards via Web Serial (USB) at 115200 baud with a live Serial Monitor.
 - **Live Dashboard:** a web-dashboard view fed by the simulation, with sensor cards, charts, editable alert thresholds, actuator states and a JSON data feed.
 - **Build Guide:** generates a bill of materials, a wiring schedule, a schematic diagram, ESP32 Arduino code and a safety checklist, with Copy code, Download (.md) and Print / Save as PDF buttons.
 - **Save and Load:** the project autosaves in the browser and can be saved to or loaded from a .json file.
