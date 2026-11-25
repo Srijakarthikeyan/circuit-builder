@@ -24,8 +24,9 @@ export function checkComponentWiring(node, nodes, edges) {
     uf.union(`${e.source}:${e.sourceHandle}`, `${e.target}:${e.targetHandle}`, e.id)
   })
 
-  const getNet = (pinName) => {
-    const key = `${node.id}:${pinName}`
+  // Get every pin that is in the same net as a given pin of ANY node
+  const getNetOf = (nodeId, pinName) => {
+    const key = `${nodeId}:${pinName}`
     if (!connectedPins.has(key)) return null
     const root = uf.find(key)
     const pinsInNet = []
@@ -43,6 +44,9 @@ export function checkComponentWiring(node, nodes, edges) {
     })
     return pinsInNet
   }
+
+  // Same as above, but for a pin of the component being checked
+  const getNet = (pinName) => getNetOf(node.id, pinName)
 
   // --- LED ---
   if (part.id === 'led') {
@@ -62,6 +66,81 @@ export function checkComponentWiring(node, nodes, edges) {
       gpio: gpioPin?.pinName || (hasResistor ? 'GPIO via Resistor' : 'Connected'),
       hasResistor,
     }
+  }
+
+  // --- IR LED (TRANSMITTER) ---
+  if (part.id === 'irled') {
+    const anodeNet = getNet('Anode (+)')
+    const cathodeNet = getNet('Cathode (-)')
+    const beamNet = getNet('IR Beam')
+
+    if (!anodeNet) return { isWired: false, reason: 'Anode (+) is not connected' }
+    if (!cathodeNet) return { isWired: false, reason: 'Cathode (-) is not connected' }
+
+    const hasGND = cathodeNet.some((p) => p.pinName === 'GND' || p.pinDef?.type === 'ground')
+    if (!hasGND) return { isWired: false, reason: 'Cathode must connect to Ground (GND)' }
+
+    // The IR LED needs a resistor between the ESP32 GPIO and the Anode
+    const resistorPin = anodeNet.find((p) => p.partId === 'resistor')
+    if (!resistorPin) {
+      return { isWired: false, reason: 'Add a 220Ω resistor between an ESP32 GPIO and the IR LED Anode (+)' }
+    }
+
+    // Follow the resistor to its other pin to find the GPIO
+    const otherPin = resistorPin.pinName === 'Pin 1' ? 'Pin 2' : 'Pin 1'
+    const resistorOtherNet = getNetOf(resistorPin.nodeId, otherPin)
+    const gpioPin = resistorOtherNet?.find((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
+    if (!gpioPin) return { isWired: false, reason: 'The resistor must connect to an ESP32 GPIO pin' }
+
+    if (!beamNet) return { isWired: false, reason: 'IR Beam must be connected to the projector IR Sensor' }
+    const projectorPin = beamNet.find((p) => p.partId === 'projector')
+    if (!projectorPin) return { isWired: false, reason: 'IR Beam must point at the projector IR Sensor' }
+
+    return {
+      isWired: true,
+      gpio: gpioPin.pinName,
+      hasResistor: true,
+      projectorNodeId: projectorPin.nodeId,
+    }
+  }
+
+  // --- IR RECEIVER (VS1838B) ---
+  if (part.id === 'irreceiver') {
+    const outNet = getNet('OUT')
+    const gndNet = getNet('GND')
+    const vccNet = getNet('VCC')
+
+    if (!vccNet) return { isWired: false, reason: 'Missing VCC power connection (3.3V)' }
+    if (!gndNet) return { isWired: false, reason: 'Missing Ground connection (GND)' }
+    if (!outNet) return { isWired: false, reason: 'Missing OUT connection to an ESP32 GPIO' }
+
+    const hasPower = vccNet.some((p) => p.pinName === '3V3' || p.pinName === '5V')
+    const hasGND = gndNet.some((p) => p.pinName === 'GND')
+    const gpioPin = outNet.find((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
+
+    if (!hasPower) return { isWired: false, reason: 'VCC must connect to 3.3V or 5V' }
+    if (!hasGND) return { isWired: false, reason: 'GND must connect to Ground' }
+    if (!gpioPin) return { isWired: false, reason: 'OUT must connect to an ESP32 GPIO' }
+
+    return { isWired: true, gpio: gpioPin.pinName }
+  }
+
+  // --- LCD PROJECTOR ---
+  if (part.id === 'projector') {
+    const sensorNet = getNet('IR Sensor')
+    if (!sensorNet) return { isWired: false, reason: 'IR Sensor is not connected to an IR LED' }
+
+    const beamPin = sensorNet.find((p) => p.partId === 'irled' && p.pinName === 'IR Beam')
+    if (!beamPin) return { isWired: false, reason: 'IR Sensor must receive the IR Beam from an IR LED' }
+
+    // The projector only works if the IR LED feeding it is wired correctly too
+    const ledNode = nodes.find((n) => n.id === beamPin.nodeId)
+    const ledStatus = checkComponentWiring(ledNode, nodes, edges)
+    if (!ledStatus.isWired) {
+      return { isWired: false, reason: `IR LED problem: ${ledStatus.reason}` }
+    }
+
+    return { isWired: true, gpio: ledStatus.gpio, irLedNodeId: beamPin.nodeId }
   }
 
   // --- BUZZER ---

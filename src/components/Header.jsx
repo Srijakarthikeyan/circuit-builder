@@ -13,6 +13,7 @@ export function Header({
     { id: 'build', label: 'Build' },
     { id: 'helper', label: 'Hardware Helper' },
     { id: 'simulate', label: 'Simulate' },
+    { id: 'projector', label: 'Projector Demo' },
     { id: 'devicelink', label: 'Device Link' },
     { id: 'dashboard', label: 'Dashboard' },
     { id: 'guide', label: 'Build Guide' },

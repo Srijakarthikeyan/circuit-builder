@@ -21,11 +21,11 @@ import Header from './components/Header'
 import ConnectionChecksPanel from './components/ConnectionChecksPanel'
 import HardwareHelperTab from './components/HardwareHelperTab'
 import SimulateTab from './components/SimulateTab'
+import ProjectorTab from './components/ProjectorTab'
 import DeviceLinkTab from './components/DeviceLinkTab'
 import DashboardTab from './components/DashboardTab'
 import BuildGuideTab from './components/BuildGuideTab'
 import { SimulatedDevice, WebSerialDevice, parseDeviceLine } from './deviceLink'
-
 const boxStyle = {
   background: '#1e293b',
   borderRadius: 10,
@@ -1003,6 +1003,10 @@ function CircuitBuilder() {
           />
         )}
 
+                {/* TAB: PROJECTOR DEMO */}
+        {activeTab === 'projector' && (
+          <ProjectorTab nodes={nodes} edges={edges} />
+        )}
         {/* TAB 4: DEVICE LINK */}
         {activeTab === 'devicelink' && (
           <DeviceLinkTab

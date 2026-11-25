@@ -123,6 +123,43 @@ export const PARTS = {
       { name: 'Negative (-)', side: 'left', type: 'ground', voltage: '0V' },
     ],
   },
+  irled: {
+    id: 'irled',
+    name: 'IR LED (Transmitter)',
+    color: '#7c2d12',
+    description: 'An infrared LED that sends invisible light pulses. Remote controls use it to send commands to TVs and projectors.',
+    typicalUses: 'Universal remotes, projector and TV control, IR communication',
+    operatingVoltage: '1.2V - 1.6V (use a resistor)',
+    pins: [
+      { name: 'Anode (+)', side: 'left', type: 'signal', voltage: '1.2V - 1.6V' },
+      { name: 'Cathode (-)', side: 'left', type: 'ground', voltage: '0V' },
+      { name: 'IR Beam', side: 'right', type: 'signal', voltage: 'Infrared light' },
+    ],
+  },
+  irreceiver: {
+    id: 'irreceiver',
+    name: 'IR Receiver (VS1838B)',
+    color: '#475569',
+    description: 'A sensor that detects infrared remote signals and outputs them as digital pulses. Used to capture codes from an original remote.',
+    typicalUses: 'Learning remote codes, receiving IR commands, remote-controlled devices',
+    operatingVoltage: '3.3V to 5V',
+    pins: [
+      { name: 'OUT', side: 'left', type: 'signal', voltage: '3.3V logic' },
+      { name: 'GND', side: 'left', type: 'ground', voltage: '0V' },
+      { name: 'VCC', side: 'left', type: 'power', voltage: '3.3V to 5V' },
+    ],
+  },
+  projector: {
+    id: 'projector',
+    name: 'LCD Projector',
+    color: '#1e293b',
+    description: 'A virtual LCD projector with a built-in IR sensor. It reacts to supported IR codes such as Power, Input and Volume.',
+    typicalUses: 'Classrooms, presentations, smart-classroom control projects',
+    operatingVoltage: 'Mains powered (simulated)',
+    pins: [
+      { name: 'IR Sensor', side: 'left', type: 'signal', voltage: 'Infrared light' },
+    ],
+  },
 }
 
 export const GPIO_NUMBERS = {
