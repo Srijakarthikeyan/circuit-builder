@@ -140,6 +140,21 @@ export function analyzeCircuit(nodes = [], edges = []) {
     return nets.get(uf.find(key))
   }
 
+  // Finds the ESP32 GPIO that drives a net, either directly or through one series resistor
+  const findGpioThroughResistor = (net) => {
+    if (!net) return null
+    const direct = net.pins.find((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
+    if (direct) return { pin: direct, viaResistor: false }
+    const resistorPin = net.pins.find((p) => p.partId === 'resistor')
+    if (resistorPin) {
+      const otherPinName = resistorPin.pinName === 'Pin 1' ? 'Pin 2' : 'Pin 1'
+      const otherNet = getNetForPin(resistorPin.nodeId, otherPinName)
+      const gpio = otherNet?.pins.find((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
+      if (gpio) return { pin: gpio, viaResistor: true }
+    }
+    return null
+  }
+
   // 3. Rule: Check completely disconnected parts
   nodes.forEach((node) => {
     if (!connectedNodes.has(node.id)) {
@@ -268,6 +283,17 @@ export function analyzeCircuit(nodes = [], edges = []) {
           )
         }
 
+        // Input-only GPIO check: GPIO34 and GPIO35 cannot drive an output
+        const ledDriver = findGpioThroughResistor(anodeNet)
+        if (ledDriver?.pin.pinDef?.inputOnly) {
+          addIssue(
+            'error',
+            `${node.id}: LED is driven from ${ledDriver.pin.pinName}, which is input-only`,
+            `${ledDriver.pin.pinName} can only read signals; it cannot output a voltage to power an LED. Move the wire to an output-capable pin such as GPIO2, GPIO4, GPIO5, GPIO18, GPIO21 or GPIO22.`,
+            anodeNet.edgeIds
+          )
+        }
+
         // Current-limiting resistor check: does Anode net connect directly to an ESP32 GPIO?
         const anodeHasDirectGPIO = anodeNet.pins.some((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
         const anodeHasResistor = anodeNet.pins.some((p) => p.partId === 'resistor')
@@ -284,6 +310,194 @@ export function analyzeCircuit(nodes = [], edges = []) {
             'ok',
             `${node.id}: LED wired correctly with current-limiting resistor`,
             `Anode connects through a resistor and Cathode connects to Ground.`
+          )
+        }
+      }
+    }
+
+    // --- IR LED (TRANSMITTER) RULES ---
+    if (part.id === 'irled') {
+      const anodeNet = getNetForPin(node.id, 'Anode (+)')
+      const cathodeNet = getNetForPin(node.id, 'Cathode (-)')
+      const beamNet = getNetForPin(node.id, 'IR Beam')
+
+      if (!anodeNet && cathodeNet) {
+        addIssue(
+          'warning',
+          `${node.id}: IR LED Anode (+) is unconnected`,
+          `The Anode (+) pin of the IR LED needs to connect to an ESP32 GPIO pin through a 220Ω resistor.`,
+          cathodeNet.edgeIds
+        )
+      } else if (anodeNet && !cathodeNet) {
+        addIssue(
+          'warning',
+          `${node.id}: IR LED Cathode (-) is unconnected`,
+          `The Cathode (-) pin of the IR LED must connect to an ESP32 GND pin to complete the circuit.`,
+          anodeNet.edgeIds
+        )
+      } else if (anodeNet && cathodeNet) {
+        const anodeHasGND = anodeNet.pins.some((p) => p.pinDef?.type === 'ground' || p.pinName === 'GND')
+        const cathodeHasGPIO = cathodeNet.pins.some((p) => p.pinDef?.type === 'gpio')
+        const cathodeHasPower = cathodeNet.pins.some((p) => p.pinDef?.type === 'power' || p.pinName === '3V3' || p.pinName === '5V')
+        const cathodeHasGND = cathodeNet.pins.some((p) => p.pinDef?.type === 'ground' || p.pinName === 'GND')
+
+        let hasProblem = false
+
+        if (anodeHasGND) {
+          hasProblem = true
+          addIssue(
+            'error',
+            `${node.id}: Reversed IR LED Polarity (Anode on GND)`,
+            `The IR LED Anode (+) is wired to Ground. Anodes must receive positive voltage; current cannot flow backward through an LED.`,
+            anodeNet.edgeIds
+          )
+        }
+        if (cathodeHasGPIO || cathodeHasPower) {
+          hasProblem = true
+          addIssue(
+            'error',
+            `${node.id}: Reversed IR LED Polarity (Cathode on High/GPIO)`,
+            `The IR LED Cathode (-) is wired to a GPIO or Power rail. Cathodes must connect to Ground (GND).`,
+            cathodeNet.edgeIds
+          )
+        }
+
+        const driver = findGpioThroughResistor(anodeNet)
+
+        if (!driver) {
+          hasProblem = true
+          addIssue(
+            'warning',
+            `${node.id}: IR LED is not driven by an ESP32 GPIO`,
+            `Connect the IR LED Anode (+) to an ESP32 GPIO (such as GPIO4) through a 220Ω resistor so the ESP32 can send remote-control pulses.`,
+            anodeNet.edgeIds
+          )
+        } else {
+          if (!driver.viaResistor) {
+            hasProblem = true
+            addIssue(
+              'warning',
+              `${node.id}: IR LED connected to ${driver.pin.pinName} without a resistor`,
+              `An LED connected straight to a GPIO draws too much current and may damage the pin or the LED. Place a 220Ω resistor in series between ${driver.pin.pinName} and the IR LED Anode (+).`,
+              anodeNet.edgeIds
+            )
+          }
+          if (driver.pin.pinDef?.inputOnly) {
+            hasProblem = true
+            addIssue(
+              'error',
+              `${node.id}: IR LED is driven from ${driver.pin.pinName}, which is input-only`,
+              `${driver.pin.pinName} can only read signals; it cannot send IR pulses. Move the wire to an output-capable pin such as GPIO4, GPIO5, GPIO18, GPIO21 or GPIO22.`,
+              anodeNet.edgeIds
+            )
+          }
+        }
+
+        if (beamNet) {
+          const wrongBeamPins = beamNet.pins.filter(
+            (p) => !(p.partId === 'projector') && !(p.partId === 'irled' && p.pinName === 'IR Beam')
+          )
+          if (wrongBeamPins.length > 0) {
+            hasProblem = true
+            addIssue(
+              'error',
+              `${node.id}: IR Beam is wired to an electrical pin`,
+              `The IR Beam is invisible light, not electricity. Connect it only to the IR Sensor of a projector, not to ${wrongBeamPins.map((p) => p.pinName).join(', ')}.`,
+              beamNet.edgeIds
+            )
+          }
+        } else {
+          addIssue(
+            'info',
+            `${node.id}: IR LED is not aimed at a projector yet`,
+            `Connect the IR Beam pin to the IR Sensor of an LCD Projector to complete the control path.`,
+            []
+          )
+        }
+
+        if (!hasProblem && driver && cathodeHasGND) {
+          addIssue(
+            'ok',
+            `${node.id}: IR LED wired correctly (${driver.pin.pinName} to resistor to IR LED to GND)`,
+            `The ESP32 can send infrared remote-control pulses through this LED.`
+          )
+        }
+      }
+    }
+
+    // --- IR RECEIVER RULES ---
+    if (part.id === 'irreceiver') {
+      const outNet = getNetForPin(node.id, 'OUT')
+      const gndNet = getNetForPin(node.id, 'GND')
+      const vccNet = getNetForPin(node.id, 'VCC')
+
+      const vccOk = vccNet && vccNet.pins.some((p) => p.pinName === '3V3' || p.pinName === '5V')
+      const gndOk = gndNet && gndNet.pins.some((p) => p.pinName === 'GND')
+      const outGpio = outNet && outNet.pins.find((p) => p.partId === 'esp32' && p.pinDef?.type === 'gpio')
+
+      if (vccOk && gndOk && outGpio) {
+        addIssue(
+          'ok',
+          `${node.id}: IR Receiver correctly wired to ${outGpio.pinName}`,
+          `VCC is on power, GND on ground, and OUT is connected to ${outGpio.pinName}, ready to capture remote codes.`
+        )
+      } else if (vccNet || gndNet || outNet) {
+        if (!vccOk) {
+          addIssue(
+            'warning',
+            `${node.id}: IR Receiver VCC must connect to 3.3V or 5V`,
+            `Connect the IR Receiver VCC pin to an ESP32 3.3V or 5V power pin.`,
+            vccNet ? vccNet.edgeIds : []
+          )
+        }
+        if (!gndOk) {
+          addIssue(
+            'warning',
+            `${node.id}: IR Receiver GND must connect to Ground`,
+            `Connect the IR Receiver GND pin to an ESP32 GND pin.`,
+            gndNet ? gndNet.edgeIds : []
+          )
+        }
+        if (!outGpio) {
+          addIssue(
+            'warning',
+            `${node.id}: IR Receiver OUT must connect to an ESP32 GPIO pin`,
+            `Connect the OUT pin to a GPIO pin (such as GPIO5) so the ESP32 can read the captured remote signal.`,
+            outNet ? outNet.edgeIds : []
+          )
+        }
+      }
+    }
+
+    // --- LCD PROJECTOR RULES ---
+    if (part.id === 'projector') {
+      const sensorNet = getNetForPin(node.id, 'IR Sensor')
+
+      if (!sensorNet) {
+        addIssue(
+          'info',
+          `${node.id}: Projector has no IR LED aimed at it`,
+          `Connect an IR LED's IR Beam pin to the projector's IR Sensor so it can receive commands.`,
+          []
+        )
+      } else {
+        const wrongPins = sensorNet.pins.filter(
+          (p) => p.partId !== 'projector' && !(p.partId === 'irled' && p.pinName === 'IR Beam')
+        )
+        const hasBeam = sensorNet.pins.some((p) => p.partId === 'irled' && p.pinName === 'IR Beam')
+
+        if (wrongPins.length > 0) {
+          addIssue(
+            'error',
+            `${node.id}: Projector IR Sensor is wired to an electrical pin`,
+            `The projector's IR Sensor receives light, not electricity. Connect it only to an IR LED's IR Beam pin, not to ${wrongPins.map((p) => p.pinName).join(', ')}.`,
+            sensorNet.edgeIds
+          )
+        } else if (hasBeam) {
+          addIssue(
+            'ok',
+            `${node.id}: Projector receives the IR Beam from an IR LED`,
+            `The IR control path to the projector is connected.`
           )
         }
       }
@@ -358,6 +572,18 @@ export function analyzeCircuit(nodes = [], edges = []) {
             negNet.edgeIds
           )
         }
+
+        // Input-only GPIO check: GPIO34 and GPIO35 cannot drive an output
+        const buzzerDriver = posNet.pins.find((p) => p.partId === 'esp32' && p.pinDef?.inputOnly)
+        if (buzzerDriver) {
+          addIssue(
+            'error',
+            `${node.id}: Buzzer is driven from ${buzzerDriver.pinName}, which is input-only`,
+            `${buzzerDriver.pinName} can only read signals; it cannot output a tone. Move the wire to an output-capable pin such as GPIO2, GPIO4, GPIO5, GPIO18, GPIO21 or GPIO22.`,
+            posNet.edgeIds
+          )
+        }
+
         if (posHasGPIO && negHasGND) {
           addIssue(
             'ok',
